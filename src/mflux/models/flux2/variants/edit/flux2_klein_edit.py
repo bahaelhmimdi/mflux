@@ -39,7 +39,14 @@ class Flux2KleinEdit(nn.Module):
             lora_scales=lora_scales,
             model_config=model_config or ModelConfig.flux2_klein_4b(),
         )
-
+    def encode_prompt(self, prompt: str):
+        """Expose internal prompt encoding directly to the user interface for caching."""
+        from mflux.models.flux2.model.flux2_text_encoder.flux2_prompt_encoder import Flux2PromptEncoder
+        return Flux2PromptEncoder.encode_prompt(
+            text_encoder=self.text_encoder,
+            tokenizer=self.tokenizer,
+            prompt=prompt
+        )
     def generate_image(
         self,
         seed: int,
