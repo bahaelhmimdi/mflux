@@ -28,6 +28,7 @@ class Qwen3TextEncoder(nn.Module):
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.embed_tokens = nn.Embedding(vocab_size, hidden_size)
+        
         self.layers = [
             Qwen3VLDecoderLayer(
                 hidden_size=hidden_size,
@@ -64,34 +65,23 @@ class Qwen3TextEncoder(nn.Module):
             attention_mask = mx.ones((batch_size, seq_len), dtype=mx.int32)
 
         mask_dtype = hidden_states.dtype
-        padding_mask = mx.where(
-            attention_mask == 1,
-            mx.zeros(attention_mask.shape, dtype=mask_dtype),
-            mx.full(attention_mask.shape, -float("inf"), dtype=mask_dtype),
-        )
-        padding_mask = mx.expand_dims(mx.expand_dims(padding_mask, axis=1), axis=1)
+        padding_mask = mx.where(attention_mask == 1, 0.0, -float("inf")).astype(mask_dtype)
+        padding_mask = padding_mask[:, None, None, :]
 
         if seq_len == 1:
             causal_tri_mask = mx.zeros((batch_size, 1, 1, 1), dtype=mask_dtype)
         else:
-            idx = mx.arange(seq_len, dtype=mx.int32)
-            j = mx.expand_dims(idx, axis=0)
-            i = mx.expand_dims(idx, axis=1)
-            tri_bool = j > i
-            zeros_2d = mx.zeros((seq_len, seq_len), dtype=mask_dtype)
-            neginf_2d = mx.full((seq_len, seq_len), -float("inf"), dtype=mask_dtype)
-            causal_tri_mask = mx.where(tri_bool, neginf_2d, zeros_2d)
-            causal_tri_mask = mx.expand_dims(mx.expand_dims(causal_tri_mask, axis=0), axis=0)
-            causal_tri_mask = mx.broadcast_to(causal_tri_mask, (batch_size, 1, seq_len, seq_len))
+            tri_bool = mx.tri(seq_len, seq_len, k=-1, dtype=mx.bool_)
+            causal_tri_mask = mx.where(tri_bool, 0.0, -float("inf")).astype(mask_dtype)
+            causal_tri_mask = causal_tri_mask[None, None, :, :]
+
         attention_mask_4d = causal_tri_mask + padding_mask
 
-        position_ids = mx.arange(seq_len, dtype=mx.int32)
-        position_ids = mx.expand_dims(position_ids, axis=0)
-        position_ids = mx.broadcast_to(position_ids, (batch_size, seq_len))
+        position_ids = mx.arange(seq_len, dtype=mx.int32)[None, :]
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # Match HF behavior: include embedding output as the first hidden state.
         hidden_states_list = [hidden_states] if output_hidden_states else None
+        
         for layer in self.layers:
             hidden_states, _ = layer(
                 hidden_states,
@@ -103,6 +93,10 @@ class Qwen3TextEncoder(nn.Module):
                 hidden_states_list.append(hidden_states)
 
         hidden_states = self.norm(hidden_states)
+        
+        if output_hidden_states:
+            hidden_states_list[-1] = hidden_states
+
         return hidden_states, hidden_states_list
 
     def get_prompt_embeds(
@@ -118,7 +112,9 @@ class Qwen3TextEncoder(nn.Module):
         )
         if hidden_states_list is None:
             raise RuntimeError("Hidden states not available for prompt embedding.")
+            
         stacked = mx.stack([hidden_states_list[i] for i in hidden_state_layers], axis=1)
         batch_size, num_layers, seq_len, hidden_dim = stacked.shape
+        
         prompt_embeds = mx.transpose(stacked, (0, 2, 1, 3)).reshape(batch_size, seq_len, num_layers * hidden_dim)
         return prompt_embeds
