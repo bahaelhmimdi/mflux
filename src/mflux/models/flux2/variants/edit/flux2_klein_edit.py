@@ -40,22 +40,24 @@ class Flux2KleinEdit(nn.Module):
             model_config=model_config or ModelConfig.flux2_klein_4b(),
         )
     def encode_prompt(self, prompt: str):
-        """Safely proxies prompt text into the active helper array pipeline using internal context mapping."""
+        """Safely proxies prompt text into the active helper array pipeline by scanning underlying sub-containers."""
         from mflux.models.flux2.variants.edit.flux2_klein_edit_helpers import _Flux2KleinEditHelpers
         
-        # Comprehensive fallback tree to grab the tokenizer and text encoder from the MLX instance container
-        tokenizer = (
-            getattr(self, "tokenizer", None) or 
-            getattr(getattr(self, "model_config", None), "tokenizer", None) or
-            getattr(getattr(self, "config", None), "tokenizer", None)
-        )
+        # 1. Target the internal base model components or bit wrapper
+        base_container = getattr(self, "bits", None) or getattr(self, "model", None) or self
         
-        text_encoder = (
-            getattr(self, "text_encoder", None) or 
-            getattr(getattr(self, "model_config", None), "text_encoder", None) or
-            getattr(getattr(self, "config", None), "text_encoder", None)
-        )
+        # 2. Safely capture the operational text processing properties
+        tokenizer = getattr(base_container, "tokenizer", None) or getattr(self, "tokenizer", None)
+        text_encoder = getattr(base_container, "text_encoder", None) or getattr(self, "text_encoder", None)
         
+        if tokenizer is None or text_encoder is None:
+            # Absolute fallback: loop through instance dictionary to skip MLX proxy hooks completely
+            for value in self.__dict__.values():
+                if hasattr(value, "tokenizer") and tokenizer is None:
+                    tokenizer = value.tokenizer
+                if hasattr(value, "text_encoder") and text_encoder is None:
+                    text_encoder = value.text_encoder
+
         return _Flux2KleinEditHelpers.extract_embeddings(
             text_encoder=text_encoder,
             tokenizer=tokenizer,
