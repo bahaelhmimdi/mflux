@@ -65,15 +65,13 @@ class Qwen3TextEncoder(nn.Module):
             attention_mask = mx.ones((batch_size, seq_len), dtype=mx.int32)
 
         mask_dtype = hidden_states.dtype
-        padding_mask = mx.where(attention_mask == 1, 0.0, -float("inf")).astype(mask_dtype)
-        padding_mask = padding_mask[:, None, None, :]
+        padding_mask = (1.0 - attention_mask[:, None, None, :].astype(mask_dtype)) * -1e9
 
         if seq_len == 1:
-            causal_tri_mask = mx.zeros((batch_size, 1, 1, 1), dtype=mask_dtype)
+            causal_tri_mask = mx.zeros((1, 1, 1, 1), dtype=mask_dtype)
         else:
-            tri_bool = mx.tri(seq_len, seq_len, k=-1, dtype=mx.bool_)
-            causal_tri_mask = mx.where(tri_bool, 0.0, -float("inf")).astype(mask_dtype)
-            causal_tri_mask = causal_tri_mask[None, None, :, :]
+            tri_mask = mx.tri(seq_len, seq_len, k=-1, dtype=mask_dtype)
+            causal_tri_mask = (1.0 - tri_mask)[None, None, :, :] * -1e9
 
         attention_mask_4d = causal_tri_mask + padding_mask
 
