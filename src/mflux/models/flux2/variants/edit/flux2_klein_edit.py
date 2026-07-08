@@ -43,9 +43,18 @@ class Flux2KleinEdit(nn.Module):
         """Safely proxies prompt text into the active helper array pipeline using internal context mapping."""
         from mflux.models.flux2.variants.edit.flux2_klein_edit_helpers import _Flux2KleinEditHelpers
         
-        # Grab the tokenizer from whichever context variable KleinEdit registers it under
-        tokenizer = getattr(self, "tokenizer", None) or getattr(self.model_context, "tokenizer", None)
-        text_encoder = getattr(self, "text_encoder", None) or getattr(self.model_context, "text_encoder", None)
+        # Comprehensive fallback tree to grab the tokenizer and text encoder from the MLX instance container
+        tokenizer = (
+            getattr(self, "tokenizer", None) or 
+            getattr(getattr(self, "model_config", None), "tokenizer", None) or
+            getattr(getattr(self, "config", None), "tokenizer", None)
+        )
+        
+        text_encoder = (
+            getattr(self, "text_encoder", None) or 
+            getattr(getattr(self, "model_config", None), "text_encoder", None) or
+            getattr(getattr(self, "config", None), "text_encoder", None)
+        )
         
         return _Flux2KleinEditHelpers.extract_embeddings(
             text_encoder=text_encoder,
