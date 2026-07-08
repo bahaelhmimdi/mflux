@@ -40,11 +40,16 @@ class Flux2KleinEdit(nn.Module):
             model_config=model_config or ModelConfig.flux2_klein_4b(),
         )
     def encode_prompt(self, prompt: str):
-        """Safely proxies prompt text into the active helper array pipeline."""
+        """Safely proxies prompt text into the active helper array pipeline using internal context mapping."""
         from mflux.models.flux2.variants.edit.flux2_klein_edit_helpers import _Flux2KleinEditHelpers
+        
+        # Grab the tokenizer from whichever context variable KleinEdit registers it under
+        tokenizer = getattr(self, "tokenizer", None) or getattr(self.model_context, "tokenizer", None)
+        text_encoder = getattr(self, "text_encoder", None) or getattr(self.model_context, "text_encoder", None)
+        
         return _Flux2KleinEditHelpers.extract_embeddings(
-            text_encoder=self.text_encoder,
-            tokenizer=self.tokenizer,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
             prompt=prompt
         )
     def generate_image(
