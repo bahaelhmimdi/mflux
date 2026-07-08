@@ -21,7 +21,7 @@ class _Flux2KleinEditHelpers:
             prompt=prompt,
             tokenizer=tokenizer,
             text_encoder=text_encoder,
-            num_images_per_prompt=1,
+          #  num_images_per_prompt=1,
             max_sequence_length=512,
             text_encoder_out_layers=(9, 18, 27),
         )
