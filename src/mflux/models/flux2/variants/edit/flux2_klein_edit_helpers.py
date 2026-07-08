@@ -127,3 +127,13 @@ class _Flux2KleinEditHelpers:
             )
 
         return image_latents, image_latent_ids
+    @classmethod
+    def extract_embeddings(cls, text_encoder: Qwen3TextEncoder, tokenizer, prompt: str) -> tuple[mx.array, mx.array]:
+        """Exposes text encoding pipeline cleanly without modifying signature boundaries."""
+        return Flux2PromptEncoder.encode_prompt(
+            prompt=prompt,
+            tokenizer=tokenizer,
+            text_encoder=text_encoder,
+            max_sequence_length=512,
+            text_encoder_out_layers=(9, 18, 27),
+        )
