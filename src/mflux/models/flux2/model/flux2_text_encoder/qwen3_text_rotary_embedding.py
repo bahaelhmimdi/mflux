@@ -16,22 +16,26 @@ class Qwen3TextRotaryEmbedding(nn.Module):
         self.base = base
         self.scaling_factor = scaling_factor
         
-        # Precompute inverse frequencies
-        self.inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+        # Precompute inverse frequencies as a constant array
+        inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+        
+        # Reshape to [1, 1, dim // 2] for easier broadcasting later
+        self.inv_freq = inv_freq[None, None, :]
 
     def __call__(self, x: mx.array, position_ids: mx.array) -> tuple[mx.array, mx.array]:
+        # Enforce batch dimension if missing
         if position_ids.ndim == 1:
             position_ids = position_ids[None, :]
             
-        # Broadcast over batch and sequence lengths
-        inv_freq = self.inv_freq[None, None, :]
-        
         # Scale the position domain directly (Linear Scaling strategy)
         pos = position_ids.astype(mx.float32)[..., None] / self.scaling_factor
-        freqs = pos * inv_freq
         
-        # Duplicate for the hidden dimension mapping
+        # Compute frequencies via broadcasting -> shape: [batch_size, seq_len, dim // 2]
+        freqs = pos * self.inv_freq
+        
+        # Duplicate for the hidden dimension mapping -> shape: [batch_size, seq_len, dim]
         emb = mx.concatenate([freqs, freqs], axis=-1)
+        
         cos = mx.cos(emb)
         sin = mx.sin(emb)
         
