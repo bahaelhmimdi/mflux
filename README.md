@@ -6,7 +6,167 @@
 
 ### About
 
-Run the latest state-of-the-art generative image models locally on your Mac in native MLX!
+Run the modified state-of-the-art generative image models locally on your Mac in native MLX!
+
+![Puffin](src/mflux/assets/proof.png)
+
+Code for test
+
+```python
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#   "mflux",
+# ]
+# ///
+import os
+import sys
+import time
+
+# =========================================================================
+# FORCE-LOAD & PATCH: Targets the exact helper module causing the crash
+# =========================================================================
+try:
+    # 1. Force Python to load the exact file containing the bug
+    import mflux.models.flux2.variants.edit.flux2_klein_edit_helpers as helpers
+    
+    # 2. Extract the encoder class directly from that loaded helper module
+    if hasattr(helpers, "Flux2PromptEncoder"):
+        encoder_cls = helpers.Flux2PromptEncoder
+        _original_encode_prompt = encoder_cls.encode_prompt
+
+        @classmethod
+        def _safe_encode_prompt(cls, *args, **kwargs):
+            # Intercept and drop the breaking parameter right before execution
+            kwargs.pop("num_images_per_prompt", None)
+            return _original_encode_prompt(*args, **kwargs)
+
+        # Rebind it directly inside the helper context
+        encoder_cls.encode_prompt = _safe_encode_prompt
+        print("🩹 Success: Framework Patch applied directly to Klein Edit Helpers!")
+    else:
+        print("⚠️ Flux2PromptEncoder not found in helper module attributes.")
+except Exception as patch_err:
+    print(f"⚠️ Direct patch binding failed: {patch_err}")
+
+# =========================================================================
+# MAIN EXECUTION CORE
+# =========================================================================
+from mflux.callbacks.instances.battery_saver import BatterySaver
+from mflux.callbacks.instances.memory_saver import MemorySaver
+from mflux.models.common.config import ModelConfig
+from mflux.models.flux2.variants import Flux2KleinEdit
+import mlx.core as mx
+import numpy as np
+
+# Global configuration & scaling factors
+SCALE_FACTOR = 0.5  
+BASE_WIDTH = 1024
+BASE_HEIGHT = 1024
+
+TARGET_WIDTH = int((BASE_WIDTH * SCALE_FACTOR) // 32) * 32
+TARGET_HEIGHT = int((BASE_HEIGHT * SCALE_FACTOR) // 32) * 32
+
+print(f"📐 Target Dimensions Matrix: {TARGET_WIDTH}x{TARGET_HEIGHT} (Scale Factor: {SCALE_FACTOR})")
+
+# Initialize Local Model Instance (Optimized 4-bit Quantization)
+model_config = ModelConfig.flux2_klein_4b()
+model = Flux2KleinEdit(
+    model_config=model_config,
+    lora_paths=["thedeoxen/refcontrol-FLUX.2-klein-4B-reference-depth-lora"],
+    lora_scales=[0.9],
+    quantize=4
+)
+
+# Rigorous resource managers tailored for running models on local unified memory architecture
+model.callbacks.register(BatterySaver(battery_percentage_stop_limit=20))
+model.callbacks.register(MemorySaver(model=model, keep_transformer=False))
+
+prompt = "refcontrol"
+cache_file = "prompt_embeddingss.npz"
+image = None
+
+# =========================================================================
+# EXECUTION & TIME BENCHMARKING PIPELINE
+# =========================================================================
+global_start_time = time.time()
+
+# Case 1: Checking for pre-computed array weight cache (PROMPT DID NOT CHANGE)
+if os.path.exists(cache_file):
+    try:
+        data = np.load(cache_file, allow_pickle=True)
+        if 'prompt' in data and str(data['prompt']) == prompt:
+            print("\n⚡ [CACHE HIT] Loading matrix profile from disk...")
+            baseline_run_time = data['baseline_time'] if 'baseline_time' in data.files else None
+            
+            case1_start = time.time()
+            prompt_embeds = mx.array(data['prompt_embeds'])
+            text_ids = mx.array(data['text_ids'])
+            
+            image = model.predict(
+                prompt_embeds=prompt_embeds,
+                text_ids=text_ids,
+                image_paths=["2d.png", "u.png"],
+                width=TARGET_WIDTH,   
+                height=TARGET_HEIGHT, 
+                num_inference_steps=2,
+                seed=42,
+            )
+            cached_execution_duration = time.time() - case1_start
+            print(f"⏱️ Cached Generation Runtime: {cached_execution_duration:.2f} seconds.")
+            
+            if baseline_run_time:
+                print(f"🎉 Optimization Metrics: You saved {float(baseline_run_time) - cached_execution_duration:.2f} seconds compared to the cold run!")
+        else:
+            print("🔄 Prompt mutation or corrupted archive detected. Invalidating old cache.")
+            os.remove(cache_file)
+    except Exception as e:
+        print(f"⚠️ Cache read error: {e}")
+        if os.path.exists(cache_file): 
+            try: os.remove(cache_file)
+            except: pass
+
+# Case 2: Cache Miss / Cold Run
+if image is None:
+    print("\n🧠 [COLD RUN] Extracting text embeddings via library interface...")
+    case2_start = time.time()
+    
+    # Extract structural tuples cleanly via library interface patch
+    prompt_embeds, text_ids = model.encode_prompt(prompt)
+    
+    print("🚀 Running initial generation loops...")
+    image = model.predict(
+        prompt_embeds=prompt_embeds,
+        text_ids=text_ids,
+        image_paths=["2d.png", "u.png"],
+        width=TARGET_WIDTH,   
+        height=TARGET_HEIGHT, 
+        num_inference_steps=2,
+        seed=42,
+    )
+    cold_execution_duration = time.time() - case2_start
+    
+    # Force evaluate arrays to materialize unified memory weights before conversion
+# Force evaluate arrays to materialize unified memory weights before conversion
+# Force evaluate arrays to materialize unified memory weights
+    mx.eval(prompt_embeds, text_ids)
+    
+    # FIX: Convert to native Python lists first to completely bypass the PEP 3118 buffer protocol
+    np.savez(
+        cache_file, 
+        prompt=prompt, 
+        prompt_embeds=np.array(prompt_embeds.tolist(), dtype=np.float32), 
+        text_ids=np.array(text_ids.tolist(), dtype=np.int32),
+        baseline_time=cold_execution_duration
+    )
+    print(f"💾 Cache saved to disk. Cold Run Benchmark: {cold_execution_duration:.2f} seconds.")
+if image is not None:
+    image.save("flux2_edit.png")
+    total_script_time = time.time() - global_start_time
+    print(f"\n✨ Execution Complete! Image saved to 'flux2_edit.png' (Total Script Up-time: {total_script_time:.2f}s)")
+
+```
 
 ### Table of contents
 
