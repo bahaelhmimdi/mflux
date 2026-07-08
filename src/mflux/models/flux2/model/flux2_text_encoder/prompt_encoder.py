@@ -1,4 +1,3 @@
-import time
 import mlx.core as mx
 
 from mflux.models.common.tokenizer import Tokenizer
@@ -14,10 +13,10 @@ class Flux2PromptEncoder:
         max_sequence_length: int = 512,
         text_encoder_out_layers: tuple[int, ...] = (9, 18, 27),
     ) -> tuple[mx.array, mx.array]:
-        """Encodes prompt once to be cached."""
-        print(f"🚀 [Text Encoder] Starting text tokenization and hidden layer extraction...")
-        start_time = time.perf_counter()
+        """Encodes prompt once to be cached. 
         
+        Replicating for multi-image batches can now happen dynamically outside.
+        """
         prompt_embeds = Flux2PromptEncoder._get_qwen3_prompt_embeds(
             prompt=prompt,
             tokenizer=tokenizer,
@@ -25,16 +24,7 @@ class Flux2PromptEncoder:
             max_sequence_length=max_sequence_length,
             hidden_state_layers=text_encoder_out_layers,
         )
-        
-        # Force MLX to evaluate the text graph immediately so we get an accurate execution time measurement
-        mx.eval(prompt_embeds)
-        
         text_ids = Flux2PromptEncoder.prepare_text_ids(prompt_embeds)
-        mx.eval(text_ids)
-        
-        end_time = time.perf_counter()
-        print(f"✅ [Text Encoder] Successfully encoded prompt features in {(end_time - start_time) * 1000:.2f}ms!")
-        
         return prompt_embeds, text_ids
 
     @staticmethod
@@ -56,6 +46,7 @@ class Flux2PromptEncoder:
     def prepare_text_ids(x: mx.array, t_coord: mx.array | None = None) -> mx.array:
         batch_size, seq_len, _ = x.shape
         
+        # Completely vectorized spatial setup
         if t_coord is None:
             t = mx.zeros((batch_size, seq_len), dtype=mx.int32)
         else:
