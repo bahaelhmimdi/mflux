@@ -345,3 +345,87 @@ class Flux2KleinEdit(nn.Module):
             return noise
 
         return predict
+    def predict(
+        self,
+        prompt_embeds: mx.array,
+        text_ids: mx.array,
+        seed: int,
+        num_inference_steps: int = 4,
+        height: int = 1024,
+        width: int = 1024,
+        guidance: float = 1.0,
+        image_paths: list[Path | str] | None = None,
+        image_strength: float | None = None,
+        scheduler: str = "flow_match_euler_discrete",
+        use_kv_cache: bool | None = None,
+    ) -> GeneratedImage:
+        """Custom generation pipeline that accepts cached embeddings directly, completely bypassing text encoding."""
+        primary_image_path = image_paths[0] if image_paths else None
+
+        config = Config(
+            model_config=self.model_config,
+            num_inference_steps=num_inference_steps,
+            height=height,
+            width=width,
+            guidance=guidance,
+            image_path=primary_image_path,
+            image_strength=image_strength,
+            scheduler=scheduler,
+        )
+
+        # 2. Prepare latents natively
+        latents, latent_ids, latent_height, latent_width = _Flux2KleinEditHelpers.prepare_generation_latents(
+            seed=seed,
+            height=config.height,
+            width=config.width,
+        )
+
+        # 3. Reference image conditioning
+        image_latents, image_latent_ids = _Flux2KleinEditHelpers.prepare_reference_image_conditioning(
+            vae=self.vae,
+            tiling_config=self.tiling_config,
+            image_paths=image_paths,
+            height=config.height,
+            width=config.width,
+            batch_size=latents.shape[0],
+        )
+
+        cache_enabled = (
+            (use_kv_cache if use_kv_cache is not None else self.model_config.supports_kv_cache)
+            and image_latents is not None
+            and image_latents.shape[1] > 0
+        )
+        kv_cache, negative_kv_cache = self._create_kv_caches(
+            cache_enabled=cache_enabled,
+            needs_negative_cache=False,
+        )
+
+        # 4. Denoising loop
+        ctx = self.callbacks.start(seed=seed, prompt="[CACHED EMBEDDINGS]", config=config)
+        ctx.before_loop(latents)
+        predict_fn = self._predict(self.transformer)
+        
+        for step_idx, t in enumerate(config.time_steps):
+            try:
+                if cache_enabled and step_idx == 0:
+                    self._configure_kv_caches(kv_cache=kv_cache, negative_kv_cache=negative_kv_cache, mode="extract", num_ref_tokens=image_latents.shape[1])
+                    noise = predict_fn(latents=latents, image_latents=image_latents, latent_ids=latent_ids, image_latent_ids=image_latent_ids, prompt_embeds=prompt_embeds, text_ids=text_ids, negative_prompt_embeds=None, negative_text_ids=None, guidance=guidance, timestep=config.scheduler.timesteps[t], kv_cache=kv_cache, negative_kv_cache=negative_kv_cache)
+                elif cache_enabled:
+                    self._configure_kv_caches(kv_cache=kv_cache, negative_kv_cache=negative_kv_cache, mode="cached", num_ref_tokens=image_latents.shape[1])
+                    noise = self._cached_predict(self.transformer)(latents=latents, latent_ids=latent_ids, prompt_embeds=prompt_embeds, text_ids=text_ids, negative_prompt_embeds=None, negative_text_ids=None, guidance=guidance, timestep=config.scheduler.timesteps[t], kv_cache=kv_cache, negative_kv_cache=negative_kv_cache)
+                else:
+                    noise = predict_fn(latents=latents, image_latents=image_latents, latent_ids=latent_ids, image_latent_ids=image_latent_ids, prompt_embeds=prompt_embeds, text_ids=text_ids, negative_prompt_embeds=None, negative_text_ids=None, guidance=guidance, timestep=config.scheduler.timesteps[t])
+
+                latents = config.scheduler.step(noise=noise, timestep=t, latents=latents, sigmas=config.scheduler.sigmas)
+                ctx.in_loop(t, latents)
+                mx.eval(latents)
+            except KeyboardInterrupt:
+                ctx.interruption(t, latents)
+                raise StopImageGenerationException(f"Stopping image generation at step {t + 1}/{config.num_inference_steps}")
+
+        ctx.after_loop(latents)
+
+        # 6. Decode latents
+        packed_latents = latents.reshape(latents.shape[0], latent_height, latent_width, latents.shape[-1]).transpose(0, 3, 1, 2)
+        decoded = self.vae.decode_packed_latents(packed_latents)
+        return ImageUtil.to_image(decoded_latents=decoded, config=config, seed=seed, prompt="[CACHED]", negative_prompt=None, quantization=self.bits, image_paths=image_paths, image_path=config.image_path, generation_time=config.time_steps.format_dict["elapsed"])
